@@ -1,16 +1,18 @@
 -module(dest).
 -include("struct.hrl").
--export([start/1,stop/0]).
--export([destLoop/3, senderLoop/1, deliver/0]).
+-export([start/0,stop/0]).
+-export([destLoop/3, senderLoop/2, deliver/0, numero/2]).
 -export([send/1]).
 
-start(Seq) ->
+start() ->
     Nodos = nodos(),
-    Otros = delete(node(), Nodos)
+    Otros = lists:delete(node(), Nodos),
+    Lider = lists:nth(1, Nodos),
     if
-        node() == lists:nth(1, Nodos) -> connect(Otros)
+        node() == Lider -> connect(Otros);
+        true -> ok
     end,
-    register(dest, spawn(?MODULE, destLoop,[1, dict:new(), [], 0])),
+    register(dest, spawn(?MODULE, destLoop,[dict:new(), [], 0])),
     register(sender, spawn(?MODULE, senderLoop,[Otros, 1])),
     register(num, spawn(?MODULE, numero,[0, 0])),
     register(deliver, spawn(?MODULE, deliver,[])).
@@ -41,21 +43,19 @@ stop() ->
     unregister(dest).
 
 send(Msg) ->
-    sender ! #send{msg = Msg, sender = self()},
+    sender ! #msg{msg = Msg, sender = self()},
     ok.
 
-senderLoop(Otros, N) ->
+senderLoop(Nodos, N) ->
     receive
-        S when is_record(S, send) ->
+        S when is_record(S, msg) ->
             Id = atom_to_list(node()) ++ integer_to_list(N),
-            M = #msg{msg = S#send.msg, sender = node()},
-            lists:foreach(fun (X) -> {dest, X} ! {M, Id} end, Otros),
-            A = propuestas(Otros),
+            M = #msg{msg = S#msg.msg, sender = node()},
+            lists:foreach(fun (X) -> {dest, X} ! {M, Id} end, Nodos),
+            A = propuestas(Nodos),
             num ! {acordado, A},
-            lists:foreach(fun (X) -> {dest, X} ! {acordado, A, Id} end, Otros),
-            senderLoop(Otros, N+1);
-        _ ->
-            io:format("Recv cualca ~n")
+            lists:foreach(fun (X) -> {dest, X} ! {acordado, A, Id} end, Nodos),
+            senderLoop(Nodos, N+1)
     end.
 
 propuestas([]) -> 0;
@@ -80,27 +80,32 @@ destLoop(Ids, Orden, TO) ->
             receive
                 {propongo, N} ->
                     {sender, Data#msg.sender} ! {propuesta, N},
-                    destLoop(dict:append(Id, N, Ids), ubicar(Data#msj{sn = N}, N, Orden), TO)
+                    destLoop(dict:append(Id, N, Ids), ubicar(Data#msg{sn = N}, Orden), 0)
             end;
         {acordado, A0, Id} ->
-            acordado ! num,
+            io:format("acordado"),
+            num ! acordado,
             receive
                 {acuerdo, A1} ->
                     A = max(A0, A1),
                     num ! {acordado, A},
-                    {ok, N} = dict:find(Id, Ids, TO),
+                    {ok, N} = dict:find(Id, Ids),
                     if
-                        A > N -> destLoop(Ids, reubicar(N, A, Orden), TO);
-                        true -> destLoop(Ids, Orden, TO)
+                        A > N -> destLoop(Ids, reubicar(N, A, Orden), 0);
+                        true -> destLoop(Ids, Orden, 0)
                     end
             end
     after TO ->
-        [Prox | Resto] = lists:nth(1, Orden),
-        if
-            Prox#msg.estado == aceptado ->
-                deliver ! Prox,
-                destLoop(Ids, Resto, 0);
-            true -> destLoop(Ids, Resto, infinity)
+        case Orden of
+            [] -> destLoop(Ids, Orden, infinity);
+            _ ->
+                [Prox | Resto] = Orden,
+                if
+                    Prox#msg.estado == aceptado ->
+                        deliver ! Prox#msg.msg,
+                        destLoop(Ids, Resto, 0);
+                    true -> destLoop(Ids, Orden, infinity)
+                end
         end
     end.
 
@@ -108,15 +113,15 @@ ubicar(M, []) -> [M];
 ubicar(M, Msjs) ->
     [Msj | Msgs] = Msjs,
     if
-        M#msg.sn <= Msj#msg.sn -> [M | Msjs];
+        M#msg.sn =< Msj#msg.sn -> [M | Msjs];
         true -> [Msj | ubicar (M, Msgs)]
     end.
 
 reubicar(N, A, Msjs) ->
     [Msj | Msgs] = Msjs,
     if
-        N == Msj#msg.sn -> ubicar(A, Msj#msg{estado = aceptado}, Msgs);
-        true -> [Msj | reubicar (M, Msgs)]
+        N == Msj#msg.sn -> ubicar(Msj#msg{estado = aceptado, sn = A}, Msgs);
+        true -> [Msj | reubicar(N, A, Msgs)]
     end.
 
 numero(A, P) ->
@@ -128,5 +133,5 @@ numero(A, P) ->
             numero(A, N);
         acordado ->
             dest ! {acuerdo, A},
-            numero(A, N)
+            numero(A, P)
     end.
