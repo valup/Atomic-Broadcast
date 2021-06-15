@@ -83,7 +83,6 @@ destLoop(Ids, Orden, TO) ->
                     destLoop(dict:append(Id, N, Ids), ubicar(Data#msg{sn = N}, Orden), 0)
             end;
         {acordado, A0, Id} ->
-            io:format("acordado"),
             num ! acordado,
             receive
                 {acuerdo, A1} ->
@@ -91,7 +90,9 @@ destLoop(Ids, Orden, TO) ->
                     num ! {acordado, A},
                     {ok, N} = dict:find(Id, Ids),
                     if
-                        A > N -> destLoop(Ids, reubicar(N, A, Orden), 0);
+                        A >= N ->
+                            io:format("done~n"),
+                            destLoop(Ids, reubicar(N, A, Orden), 0);
                         true -> destLoop(Ids, Orden, 0)
                     end
             end
@@ -120,7 +121,11 @@ ubicar(M, Msjs) ->
 reubicar(N, A, Msjs) ->
     [Msj | Msgs] = Msjs,
     if
-        N == Msj#msg.sn -> ubicar(Msj#msg{estado = aceptado, sn = A}, Msgs);
+        N == Msj#msg.sn ->
+            if
+                A > N -> ubicar(Msj#msg{estado = aceptado, sn = A}, Msgs);
+                true -> [Msj#msg{estado = aceptado} | Msgs]
+            end;
         true -> [Msj | reubicar(N, A, Msgs)]
     end.
 
