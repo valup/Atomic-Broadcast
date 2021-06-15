@@ -51,9 +51,9 @@ senderLoop(Otros, N) ->
             M = #msg{msg = S#send.msg, sender = node()},
             lists:foreach(fun (X) -> {dest, X} ! {M, Id} end, Otros),
             A = propuestas(Otros),
-            num ! (acordado, A),
-            lists:foreach(fun (X) -> {dest, X} ! {A, Id} end, Otros),
-            senderLoop(Seq);
+            num ! {acordado, A},
+            lists:foreach(fun (X) -> {dest, X} ! {acordado, A, Id} end, Otros),
+            senderLoop(Otros, N+1);
         _ ->
             io:format("Recv cualca ~n")
     end.
@@ -73,31 +73,50 @@ deliver() ->
     end.
 
 
-destLoop(NDel, Ids, Orden,  TO) ->
+destLoop(Ids, Orden, TO) ->
     receive
-        {Data, Id} when is_record(Data,msg) ->
+        {Data, Id} when is_record(Data, msg) ->
             num ! proponer,
             receive
                 {propongo, N} ->
                     {sender, Data#msg.sender} ! {propuesta, N},
-                    Msj = #send{msg = Data#msg.msg, sender = Data#msg.sender, sn = N},
-                    destLoop(NDel, dict:append(Id, N, Ids), ubicar(Msj, N, Orden))
-
-    after TO ->
-            case dict:find(NDel, Pend) of
-                {ok, Msg} ->
-                    deliver ! Msg,
-                    destLoop(NDel + 1, Pend, 0);
-                error ->
-                    destLoop(NDel, Pend, infinity)
+                    destLoop(dict:append(Id, N, Ids), ubicar(Data#msj{sn = N}, N, Orden), TO)
+            end;
+        {acordado, A0, Id} ->
+            acordado ! num,
+            receive
+                {acuerdo, A1} ->
+                    A = max(A0, A1),
+                    num ! {acordado, A},
+                    {ok, N} = dict:find(Id, Ids, TO),
+                    if
+                        A > N -> destLoop(Ids, reubicar(N, A, Orden), TO);
+                        true -> destLoop(Ids, Orden, TO)
+                    end
             end
+    after TO ->
+        [Prox | Resto] = lists:nth(1, Orden),
+        if
+            Prox#msg.estado == aceptado ->
+                deliver ! Prox,
+                destLoop(Ids, Resto, 0);
+            true -> destLoop(Ids, Resto, infinity)
+        end
     end.
 
+ubicar(M, []) -> [M];
 ubicar(M, Msjs) ->
-    [Msj | Msgs] = Msjs
+    [Msj | Msgs] = Msjs,
     if
-        M#send.sn <= Msj#send.sn -> [M | Msjs];
+        M#msg.sn <= Msj#msg.sn -> [M | Msjs];
         true -> [Msj | ubicar (M, Msgs)]
+    end.
+
+reubicar(N, A, Msjs) ->
+    [Msj | Msgs] = Msjs,
+    if
+        N == Msj#msg.sn -> ubicar(A, Msj#msg{estado = aceptado}, Msgs);
+        true -> [Msj | reubicar (M, Msgs)]
     end.
 
 numero(A, P) ->
@@ -106,5 +125,8 @@ numero(A, P) ->
         proponer ->
             N = max(A, P) + 1,
             dest ! {propongo, N},
+            numero(A, N);
+        acordado ->
+            dest ! {acuerdo, A},
             numero(A, N)
     end.
