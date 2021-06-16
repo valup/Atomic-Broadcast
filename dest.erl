@@ -4,13 +4,12 @@
 -export([destLoop/3, liderSender/1, nodoSender/1, deliver/0, numero/2]).
 -export([send/1]).
 
-start(Nodes) ->
+start(Nodos) ->
     if
-        Nodes == [] ->
+        Nodos == [] ->
             io:format("La lista debe tener todos los nodos, incluyendo el actual~n"),
             exit(error);
         true ->
-            Nodos = hostname(Nodes),
             Lider = lists:nth(1, Nodos),
             if
                 node() == Lider ->
@@ -25,11 +24,6 @@ start(Nodes) ->
             register(deliver, spawn(?MODULE, deliver,[]))
     end,
     ok.
-
-% Crea una lista de los nodos servidores en base a SNames
-hostname(Nodos) ->
-  {ok, Hostname} = inet:gethostname(),
-  [list_to_atom(Nodo++"@"++Hostname) || Nodo <- Nodos].
 
 % Conecta el nodo actual a los de la lista
 connect([]) -> ok;
