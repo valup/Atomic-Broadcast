@@ -1,26 +1,35 @@
 -module(dest).
 -include("struct.hrl").
--export([start/0,stop/0]).
--export([destLoop/3, senderLoop/2, deliver/0, numero/2]).
+-export([start/1,stop/0]).
+-export([destLoop/3, liderSender/1, nodoSender/1, deliver/0, numero/2]).
 -export([send/1]).
 
-start() ->
-    Nodos = nodos(),
-    Otros = lists:delete(node(), Nodos),
-    Lider = lists:nth(1, Nodos),
+start(Nodes) ->
     if
-        node() == Lider -> connect(Otros);
-        true -> ok
+        Nodes == [] ->
+            io:format("La lista debe tener todos los nodos, incluyendo el actual~n"),
+            exit(error);
+        true ->
+            Nodos = hostname(Nodes),
+            Lider = lists:nth(1, Nodos),
+            if
+                node() == Lider ->
+                    [_|Otros] = Nodos,
+                    connect(Otros),
+                    register(sender, spawn(?MODULE, liderSender,[Otros]));
+                true ->
+                    register(sender, spawn(?MODULE, nodoSender,[lists:delete(node(), Nodos)]))
+            end,
+            register(dest, spawn(?MODULE, destLoop,[dict:new(), [], 0])),
+            register(num, spawn(?MODULE, numero,[0, 0])),
+            register(deliver, spawn(?MODULE, deliver,[]))
     end,
-    register(dest, spawn(?MODULE, destLoop,[dict:new(), [], 0])),
-    register(sender, spawn(?MODULE, senderLoop,[Otros, 1])),
-    register(num, spawn(?MODULE, numero,[0, 0])),
-    register(deliver, spawn(?MODULE, deliver,[])).
+    ok.
 
 % Crea una lista de los nodos servidores en base a SNames
-nodos() ->
+hostname(Nodos) ->
   {ok, Hostname} = inet:gethostname(),
-  [list_to_atom(Nodo++"@"++Hostname) || Nodo <- ?NODOS].
+  [list_to_atom(Nodo++"@"++Hostname) || Nodo <- Nodos].
 
 % Conecta el nodo actual a los de la lista
 connect([]) -> ok;
@@ -39,15 +48,47 @@ connect([Nodo | Nodos]) ->
 stop() ->
     dest ! fin,
     deliver ! fin,
+    sender ! fin,
+    num ! fin,
     unregister(deliver),
-    unregister(dest).
+    unregister(dest),
+    unregister(sender),
+    unregister(num).
 
 send(Msg) ->
     sender ! #msg{msg = Msg, sender = self()},
     ok.
 
-senderLoop(Nodos, N) ->
+liderSender(Nodos) ->
+    net_kernel:monitor_nodes(false),
+    avisar(Nodos),
+    senderLoop(Nodos, length(Nodos), 1).
+
+avisar([]) -> ok;
+avisar([Nodo|Nodos]) ->
+    {sender, Nodo} ! listo,
+    avisar(Nodos).
+
+nodoSender(Nodos) ->
     receive
+        listo ->
+            net_kernel:monitor_nodes(false),
+            senderLoop(Nodos, length(Nodos), 1)
+    end.
+
+senderLoop(Nodos, NumNodos, N) ->
+    receive
+        fin -> ok;
+        nodedown ->
+            io:format("hey~n"),
+            Nodes = nodes(),
+            if
+                length(Nodes)/NumNodos < 0.25 ->
+                    io:format("Demasiados nodos caidos. El servidor se cerrara.~n"),
+                    stop();
+                true ->
+                    senderLoop(Nodes, NumNodos, N)
+            end;
         S when is_record(S, msg) ->
             Id = atom_to_list(node()) ++ integer_to_list(N),
             M = #msg{msg = S#msg.msg, sender = node()},
@@ -55,7 +96,7 @@ senderLoop(Nodos, N) ->
             A = propuestas(Nodos),
             num ! {acordado, A},
             lists:foreach(fun (X) -> {dest, X} ! {acordado, A, Id} end, Nodos),
-            senderLoop(Nodos, N+1)
+            senderLoop(Nodos, NumNodos, N+1)
     end.
 
 propuestas([]) -> 0;
@@ -130,6 +171,7 @@ reubicar(N, A, Msjs) ->
 
 numero(A, P) ->
     receive
+        fin -> ok;
         {acordado, N} -> numero(N, P);
         proponer ->
             N = max(A, P) + 1,
