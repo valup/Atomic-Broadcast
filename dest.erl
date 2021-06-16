@@ -88,10 +88,9 @@ destLoop(Ids, Orden, TO) ->
                 {acuerdo, A1} ->
                     A = max(A0, A1),
                     num ! {acordado, A},
-                    {ok, N} = dict:find(Id, Ids),
+                    {ok, [N]} = dict:find(Id, Ids),
                     if
                         A >= N ->
-                            io:format("done~n"),
                             destLoop(Ids, reubicar(N, A, Orden), 0);
                         true -> destLoop(Ids, Orden, 0)
                     end
